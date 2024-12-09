@@ -8,7 +8,16 @@ from pathlib import Path
 import subprocess
 import sys
 
-homeassistant_version = "2024.11.2"
+homeassistant_version = "2024.12.1"
+
+
+def digest(ebuild_path):
+    args = ["echo", "sudo", "ebuild", ebuild_path, "digest"]
+    try:
+        subprocess.check_call(args)
+    except subprocess.CalledProcessError as e:
+        print(" ".join(args) + ": failed returncode={}".format(e.returncode), file=sys.stderr)
+
 
 treated_packages = set()
 pip_show_split = re.compile(r'([^: ]+): ?(.*)')
@@ -22,7 +31,7 @@ def gen_ebuild(package):
         return
 
     output = defaultdict(str)
-    args = [sys.executable, "-m", "pip", "show", package]
+    args = [sys.executable, "-m", "pip", "show", "--verbose", package]
     try:
         raw_output = subprocess.check_output(args)
     except subprocess.CalledProcessError as e:
@@ -40,21 +49,21 @@ def gen_ebuild(package):
 
     version = output["Version"]
 
-    ebuildDir = Path("/var/db/repos/gentoo-homeassistant/dev-python/" + package)
-    skelPath = Path("gentoo/tree_skel/dev-python.ebuild")
-    ebuildDir.mkdir(parents=True, exist_ok=True)
-    with ebuildDir.joinpath(package + '-' + version + ".ebuild").open("w") as ebuild, skelPath.open("r") as skel:
+    python_ebuild_dir = Path("/var/db/repos/gentoo-homeassistant/dev-python/" + package)
+    args = ["equery", "w", "dev-python/" + package]
+    try:
+        skel_path = Path(subprocess.check_output(args).decode("utf-8").split('\n')[0])
+    except subprocess.CalledProcessError:
+        skel_path = Path("gentoo/tree_skel/dev-python.ebuild")
+
+    python_ebuild_dir.mkdir(parents=True, exist_ok=True)
+    with python_ebuild_dir.joinpath(package + '-' + version + ".ebuild").open("w") as ebuild, skel_path.open("r") as skel:
         print("Creating " + ebuild.name)
         ebuild.write(skel.read())
         for requirement in output["Requires"].split(", "):
             ebuild.write("# " + requirement + '\n')
-            gen_ebuild(requirement)
-        args = ["sudo", "ebuild", ebuild.name, "digest"]
-        try:
-            subprocess.check_call(args)
-        except subprocess.CalledProcessError as e:
-            print(" ".join(args) + ": failed returncode={}".format(e.returncode), file=sys.stderr)
-            return
+            gen_ebuild(requirement.lower().replace(".", "-"))
+        digest(ebuild.name)
 
 
 deptree = defaultdict(lambda: defaultdict(set))
@@ -66,7 +75,7 @@ for module, topics in gather_modules().items():
         assert token[0] == "homeassistant"
         deptree[".".join(token[1:-1])][token[-1]].add(module)
 
-tokenizer = re.compile(r'([^\[\]<>=]+)(?:\[([^\[\]]+)\])?((?:[<>=]=?[^\[\]<>=]+)+)')
+tokenizer = re.compile(r'([^\[\]<>=]+)(?:\[([^\[\]]+)])?((?:[<>=]=?[^\[\]<>=]+)+)')
 tokenizerEq = re.compile(r'==([^<>=,]+)')
 tokenizerGt = re.compile(r'>([^<>=,]+)')
 tokenizerGe = re.compile(r'>=([^<>=,]+)')
@@ -82,8 +91,8 @@ with ebuildDir.joinpath("ha-core-" + homeassistant_version + ".ebuild").open("w"
                                                                      tokenizer.match(dep_name).group(1, 3, 2)]):
         # print('#', coredep)
         depToken = tokenizer.match(coredep)
-        gen_ebuild(depToken[1])
-        name = "dev-python/" + depToken[1]
+        # gen_ebuild(depToken[1])
+        name = "dev-python/" + depToken[1].lower().replace(".", "-").replace("_", "-")
         use = r'['
         if depToken[2] is not None:
             use += depToken[2] + r','
@@ -108,18 +117,22 @@ with ebuildDir.joinpath("ha-core-" + homeassistant_version + ".ebuild").open("w"
         ebuild.write("\t" + ' '.join(coreStr) + '\n')
     ebuild.write(r'"' + '\n')
 
+gen_ebuild("homeassistant")
+
 for topic, modules in deptree.items():
     for module, deps in sorted(modules.items()):
-        ebuildDir = Path("/var/db/repos/gentoo-homeassistant/homeassistant-base/ha-" + module)
+        module_name = "-".join(["ha", topic, module]).lower().replace(".", "-").replace("_", "-")
+        ebuildDir = Path("/var/db/repos/gentoo-homeassistant/homeassistant-base/" + module_name)
         ebuildDir.mkdir(parents=True, exist_ok=True)
-        with ebuildDir.joinpath("ha-" + module + "-" + homeassistant_version + ".ebuild").open("w") as ebuild:
+        with ebuildDir.joinpath(module_name + "-" + homeassistant_version + ".ebuild").open("w") as ebuild:
             ebuild.write("# Home Assistant Core dependencies" + '\n')
             ebuild.write(r'RDEPEND="${RDEPEND}' + '\n')
             for dep in sorted(deps, key=lambda dep_name: [s.casefold() if s is not None else "" for s in
                                                           tokenizer.match(dep_name).group(1, 3, 2)]):
                 depToken = tokenizer.match(dep)
-                gen_ebuild(depToken[1])
-                name = "dev-python/" + depToken[1]
+                short_name = depToken[1].lower().replace(".", "-").replace("_", "-")
+                gen_ebuild(short_name)
+                name = "dev-python/" + short_name
                 use = r'['
                 if depToken[2] is not None:
                     use += depToken[2] + r','
