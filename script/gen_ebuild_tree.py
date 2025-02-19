@@ -13,7 +13,7 @@ import sys
 import threading
 import traceback
 
-from ..homeassistant.const import __version__ as homeassistant_version
+from homeassistant.const import __version__ as homeassistant_version
 from .gen_requirements_all import gather_modules, core_requirements, EXCLUDED_REQUIREMENTS_ALL
 
 overlay_dir = Path("/var/db/repos/gentoo-homeassistant")
@@ -116,7 +116,7 @@ pypi_package_alias["certifi-system-store"] = "certifi"
 # This is just an alias but many packages tend to use the short name, complicating the dependencies for nothing
 pypi_package_alias["bs4"] = "beautifulsoup4"
 # HA is actually still on the old discogs-client, but gentoo is ahead... TODO: downgrade to what HA wants
-pypi_package_alias["discogs-client"] = "python3-discogs-client"
+# pypi_package_alias["discogs-client"] = "python3-discogs-client"
 # No more dependency on the old lark-parser. This one is fine.
 pypi_package_alias["lark-parser"] = "lark"
 # To avoid clashes, better use HA's fork everywhere. Versions are matching
@@ -128,9 +128,7 @@ pypi_package_version_alias["bcrypt-4.2.0"] = "4.2.1"  # TODO: update crates auto
 pypi_package_version_alias["uv-0.5.4"] = "0.5.6"  # TODO: update crates automatically instead
 pypi_package_version_alias["twistedchecker-0.7"] = "0.7.4"  # TODO: improve version chooser instead of forcing minor
 pypi_package_version_alias["array-record-0.6.0"] = "0.5.0"  # 0.6.0 has no tag or sdist...
-pypi_package_version_alias["array_record-0.6.0"] = "0.5.0"
 pypi_package_version_alias["autogen-agentchat-0.2"] = "0.2.40"  # TODO: improve version chooser instead of forcing minor
-pypi_package_version_alias["autogen_agentchat-0.2"] = "0.2.40"
 
 pypi_test_extras = {"test", "tests", "testing", "dev"}
 pypi_build_extras = { "build" }
@@ -172,35 +170,25 @@ def count_quotes(line: str) -> int:
     return count
 
 
+replace_alpha = re.compile(r'(\d+)[._-]?(?:alpha|a)[._-]?(\d+)?')
+replace_beta = re.compile(r'(\d+)[._-]?(?:beta|b)[._-]?(\d+)?')
+replace_rc = re.compile(r'(\d+)[._-]?rc[._-]?(\d+)?')
+replace_post = re.compile(r'(\d+)(?:[._-]?post[._-]?(\d+)?|[_-](\d+))')
+replace_dev = re.compile(r'(\d+)[._-]?dev[._-]?(\d+)?')
+replace_stars = re.compile(r'[*.]*\*')
 remove_v = re.compile(r'v(\d+)')
-replace_alpha = re.compile(r'(\d+)(?:\.?a|[.-_]?alpha)\.?(\d+)')
-replace_beta = re.compile(r'(\d+)(?:\.?b|[.-_]?beta)\.?(\d+)')
-replace_rc = re.compile(r'(\d+)[.-_]?rc[.-_]?(\d+)')
-replace_post = re.compile(r'(\d+)(?:[.-_]?post[.-_]?|[-_])(\d+)')
-replace_dev = re.compile(r'(\d+)[.-_]?dev')
 
 
 def normalize_version(ver: str) -> str:
+    ver = ver.strip()
     ver = replace_alpha.sub(r"\1_alpha\2", ver)
-    ver = ver.replace(r"-alpha", "_alpha")
-    ver = ver.replace(r".alpha", "_alpha")
     ver = replace_beta.sub(r"\1_beta\2", ver)
-    ver = ver.replace(r"-beta", "_beta")
-    ver = ver.replace(r".beta", "_beta")
     ver = replace_rc.sub(r"\1_rc\2", ver)
-    ver = ver.replace(r"-rc", "_rc")
-    ver = ver.replace(r".rc", "_rc")
-    ver = replace_post.sub(r"\1_p\2", ver)
-    ver = ver.replace(r"-post", r"_p")
-    ver = ver.replace(r".post", r"_p")
-    ver = ver.replace(r"post", r"_p")
-    ver = replace_dev.sub(r"\1_pre", ver)
+    ver = replace_post.sub(r"\1_p\2\3", ver)
+    ver = replace_dev.sub(r"\1_pre\2", ver)
+    ver = replace_stars.sub(r"*", ver)
     ver = remove_v.sub(r"\1", ver)
-    ver = trailing_numbers.sub(r"_p\1", ver)
-    ver = ver.replace('.*', '*')
-    if ver.endswith('*'):
-        ver = ver.strip('*') + '*'
-    return ver.strip().rstrip(r'.-')
+    return ver.rstrip(r'.-')
 
 
 tokenizer = re.compile(r'\s*(?P<name>[^\[\]~<>=!()\s,]+)'  # Package or special keyword like extra or python_version
@@ -377,7 +365,7 @@ class RequiresDistConditionVisitor(ast.NodeVisitor):
                 else:
                     breakpoint()
             elif not is_eq:
-                breakpoint()  # This is a test extra, only == is supported
+                breakpoint()  # This is a build/test extra, only == is supported
 
     def visit_BoolOp(self, node: ast.BoolOp):
         match node.op:
@@ -431,7 +419,7 @@ def gen_python_ebuild(pypi_requires: str) -> tuple[str, str, set[str]]:
     # TODO: raise an exception here instead, and fix this. Should not happen.
     if pypi_requires_tokenized is None:
         return "", "", set[str]()
-    pypi_package = pypi_requires_tokenized.group("name")
+    pypi_package = pypi_requires_tokenized.group("name").lower().replace(".", "-").replace("_", "-")
     if pypi_package in pypi_package_alias:
         pypi_package = pypi_package_alias[pypi_package]
     pypi_package_use = pypi_requires_tokenized.group("extras")
@@ -451,8 +439,7 @@ def gen_python_ebuild(pypi_requires: str) -> tuple[str, str, set[str]]:
     else:
         use = ''
 
-    gentoo_package_short_name = pypi_package.lower().replace(".", "-").replace("_", "-")
-    gentoo_package_short_name = trailing_numbers.sub(r'_\1', gentoo_package_short_name)
+    gentoo_package_short_name = trailing_numbers.sub(r'_\1', pypi_package)
     if pypi_package in ebuild_category_override:
         gentoo_package_name = ebuild_category_override[pypi_package] + "/" + gentoo_package_short_name
     else:
@@ -681,6 +668,10 @@ def gen_python_ebuild(pypi_requires: str) -> tuple[str, str, set[str]]:
             has_requirements = True
             extras.update(extra)
             has_extras = True
+
+    if has_test_extra:
+        extras.add("test")
+
     pypi_p, pypi_sdist_ext = fetch_pypi_sdist_info(pypi_package, pypi_package_version)
     if pypi_sdist_ext and pypi_sdist_ext != ".tar.gz":
         has_build_req = True
@@ -712,11 +703,18 @@ def gen_python_ebuild(pypi_requires: str) -> tuple[str, str, set[str]]:
         done = defaultdict[str, bool](bool)
         skip_empty_lines = False
         skip_commented_lines = False
-        multiline = False
+        skip_multiline_quotes = False
+
+        # DISTUTILS_SINGLE_IMPL ebuild detected. GENERATED_{R,B}DEPEND will call python_gen_cond_dep.
+        # TODO: Packages that depends on a single_impl ebuild won't work right now.
         single_impl = False
-        import_pypi = True
-        if not pypi_p:
-            import_pypi = False
+
+        # By default, assumes we are using the pypi.eclass if we could fetch anything from pypi json api.
+        # If the ebuild does not contain the "inherit pypi" line, this will be turned off later.
+        # When inherit_pypi is off, SRC_URI and S are left untouched, and app-arch/unzip will never be added to BDEPEND
+        inherit_pypi = pypi_p != ""
+
+        python_compat_ebuild = pypi_package not in ebuild_no_use_python
 
         def append_generated(variable: str, generated_variable: str, input_line: str) -> None:
             nonlocal done, ebuild, skip_empty_lines
@@ -756,8 +754,8 @@ def gen_python_ebuild(pypi_requires: str) -> tuple[str, str, set[str]]:
             skip_commented_lines = False
 
             odd_quote = count_quotes(line) % 2 == 1
-            if multiline:
-                multiline = not odd_quote
+            if skip_multiline_quotes:
+                skip_multiline_quotes = not odd_quote
             elif "DISTUTILS_SINGLE_IMPL=" in line:
                 if not line.rstrip().endswith('='):
                     single_impl = True
@@ -774,10 +772,13 @@ def gen_python_ebuild(pypi_requires: str) -> tuple[str, str, set[str]]:
                 if has_extras and not done["IUSE"]:
                     ebuild.write('IUSE="${GENERATED_IUSE}"\n')
                     done["IUSE"] = True
-                generated_depend = "GENERATED_RDEPEND=" in line
-                multiline = odd_quote and generated_depend
+                generated_rdepend = "GENERATED_RDEPEND=" in line
+                skip_multiline_quotes = odd_quote and generated_rdepend
                 # For debugging if everything is there, maybe can be removed when confident
-                ebuild.write('REQUIRES_DIST="\n\t{}\n"\n'.format('\n\t'.join(sorted(requires_dist)).replace('"', "'")))
+                if len(requires_dist) > 0 and not done["REQUIRES_DIST"]:
+                    ebuild.write('REQUIRES_DIST="\n\t{}\n"\n'.format('\n\t'.join(sorted(requires_dist))
+                                                                     .replace('"', "'")))
+                    done["REQUIRES_DIST"] = True
                 ebuild.write('GENERATED_RDEPEND="${RDEPEND}')
                 if single_impl:
                     ebuild.write(" $(python_gen_cond_dep '")
@@ -790,7 +791,7 @@ def gen_python_ebuild(pypi_requires: str) -> tuple[str, str, set[str]]:
                         continue
                     if depends in already_added:
                         continue
-                    if extra and pypi_test_extras.intersection(extra):
+                    if extra and (pypi_test_extras.intersection(extra) or pypi_build_extras.intersection(extra)):
                         continue
                     already_added.add(depends)
                     ebuild.write(f"\t{depends}\n")
@@ -798,31 +799,45 @@ def gen_python_ebuild(pypi_requires: str) -> tuple[str, str, set[str]]:
                     ebuild.write("')")
                 ebuild.write('"\n')
                 done["Requires"] = True
-                if not generated_depend:
+                if not generated_rdepend:
                     append_generated("RDEPEND", "GENERATED_RDEPEND", line)
             elif has_requirements and not done["RDEPEND"] and 'RDEPEND="' in line and done["Requires"]:
                 append_generated("RDEPEND", "GENERATED_RDEPEND", line)
+            elif 'GENERATED_RDEPEND="' in line:
+                skip_multiline_quotes = odd_quote
             elif has_extras and not done["extras"] and "IUSE=" in line:
                 generated_iuse = "GENERATED_IUSE=" in line
-                multiline = odd_quote and generated_iuse
+                skip_multiline_quotes = odd_quote and generated_iuse
                 ebuild.write(f'GENERATED_IUSE="{" ".join(sorted(extras))}"\n')
                 done["extras"] = True
                 if not generated_iuse:
                     append_generated("IUSE", "GENERATED_IUSE", line)
             elif has_extras and 'IUSE="' in line and done["extras"]:
-                multiline = odd_quote
+                skip_multiline_quotes = odd_quote
                 if not done["IUSE"]:
                     append_generated("IUSE", "GENERATED_IUSE", line)
             elif not has_extras and 'GENERATED_IUSE=' in line:
-                multiline = odd_quote
+                skip_multiline_quotes = odd_quote
             elif not has_extras and 'IUSE=' in line and "${GENERATED_IUSE}" in line:
-                ebuild.write(line.replace("${GENERATED_IUSE} ", "").replace("${GENERATED_IUSE}", "").rstrip() + '\n')
-            elif (has_build_req and import_pypi) and not done["GENERATED_BDEPEND"] \
-                    and ("distutils_enable_tests" in line or "GENERATED_BDEPEND=" in line or 'BDEPEND=""' in line):
-                multiline = odd_quote
-                ebuild.write(line.rstrip() + '\n')
+                cleaned_line = line.replace("${GENERATED_IUSE} ", "").replace("${GENERATED_IUSE}", "")
+                if 'IUSE=""' not in cleaned_line.strip():
+                    ebuild.write(cleaned_line.rstrip() + '\n')
+            elif has_build_req and (inherit_pypi or has_build_extra or has_test_extra) \
+                    and not done["BDEPEND"] \
+                    and ("distutils_enable_tests" in line or "GENERATED_BDEPEND=" in line or 'BDEPEND="' in line):
+                generated_bdepend = "GENERATED_BDEPEND=" in line
+                skip_multiline_quotes = odd_quote and generated_bdepend
+                distutils_enable_tests = "distutils_enable_tests" in line
+                if distutils_enable_tests:
+                    ebuild.write(line.rstrip() + '\n')
+
+                # For debugging if everything is there, maybe can be removed when confident
+                if len(requires_dist) > 0 and not done["REQUIRES_DIST"]:
+                    ebuild.write('REQUIRES_DIST="\n\t{}\n"\n'.format('\n\t'.join(sorted(requires_dist))
+                                                                     .replace('"', "'")))
+                    done["REQUIRES_DIST"] = True
                 ebuild.write('GENERATED_BDEPEND="${BDEPEND}\n')
-                if pypi_sdist_ext != ".tar.gz" and import_pypi:
+                if pypi_sdist_ext != ".tar.gz" and inherit_pypi:
                     ebuild.write('\tapp-arch/unzip\n')
                 if has_build_extra or has_test_extra:
                     if single_impl:
@@ -830,7 +845,8 @@ def gen_python_ebuild(pypi_requires: str) -> tuple[str, str, set[str]]:
                     already_added = set[str]()
                     if has_build_extra:
                         for requirement, depends, extra in \
-                                sorted(requirements, key=lambda x: (x[0], [symbol_priority.get(c, ord(c)) for c in x[1]])):
+                                sorted(requirements,
+                                       key=lambda x: (x[0], [symbol_priority.get(c, ord(c)) for c in x[1]])):
                             if not depends:
                                 continue
                             if depends in already_added:
@@ -844,7 +860,8 @@ def gen_python_ebuild(pypi_requires: str) -> tuple[str, str, set[str]]:
                     if has_test_extra:
                         ebuild.write('\ttest? (\n')
                         for requirement, depends, extra in \
-                                sorted(requirements, key=lambda x: (x[0], [symbol_priority.get(c, ord(c)) for c in x[1]])):
+                                sorted(requirements,
+                                       key=lambda x: (x[0], [symbol_priority.get(c, ord(c)) for c in x[1]])):
                             if not depends:
                                 continue
                             if depends in already_added:
@@ -859,15 +876,17 @@ def gen_python_ebuild(pypi_requires: str) -> tuple[str, str, set[str]]:
                     if single_impl:
                         ebuild.write("\t')\n")
                 ebuild.write('"\n')
-                if not done["BDEPEND"]:
+                if not generated_bdepend and not distutils_enable_tests:
+                    append_generated("BDEPEND", "GENERATED_BDEPEND", line)
+                else:
                     ebuild.write('BDEPEND="${GENERATED_BDEPEND}"\n')
                     done["BDEPEND"] = True
-                done["GENERATED_BDEPEND"] = True
             elif 'BDEPEND+=" test? (' in line:
-                multiline = odd_quote
+                skip_multiline_quotes = odd_quote
             elif 'GENERATED_BDEPEND="' in line:
-                multiline = odd_quote
-            elif (has_build_req or pypi_sdist_ext != ".tar.gz" and import_pypi) and 'BDEPEND="' in line and done["BDEPEND"]:
+                skip_multiline_quotes = odd_quote
+            elif (has_build_req or pypi_sdist_ext != ".tar.gz" and inherit_pypi) and 'BDEPEND="' in line \
+                    and done["BDEPEND"]:
                 cleaned_line = line
                 for remove in {"GENERATED_BDEPEND", "BDEPEND"}:
                     cleaned_line = cleaned_line.replace('${' + remove + '} ', '')
@@ -875,33 +894,33 @@ def gen_python_ebuild(pypi_requires: str) -> tuple[str, str, set[str]]:
                 if cleaned_line.strip() != 'BDEPEND=""':
                     ebuild.write(cleaned_line.replace('BDEPEND="', 'BDEPEND+=" ').rstrip() + '\n')
             elif has_license and not done["License"] and "LICENSE=" in line:
-                multiline = odd_quote
+                skip_multiline_quotes = odd_quote
                 ebuild.write('LICENSE="' + output["License"] + '"\n')
                 done["License"] = True
             elif not done["Summary"] and "DESCRIPTION=" in line:
-                multiline = odd_quote
+                skip_multiline_quotes = odd_quote
                 ebuild.write('DESCRIPTION="' + output["Summary"].replace(r'"', r'\"').replace(r'`', r'\`') + '"\n')
                 done["Summary"] = True
             elif not done["Project-URLs"] and "HOMEPAGE=" in line:
-                multiline = odd_quote
+                skip_multiline_quotes = odd_quote
                 ebuild.write('HOMEPAGE="\n  https://pypi.org/project/{}/{}"\n'
                              .format(pypi_normalizer.sub('-', pypi_package).lower(),  # TODO: use pypi's name
                                      output["Project-URLs"].replace(r'"', r'\"').replace(r'`', r'\`')))
                 done["Project-URLs"] = True
             elif pypi_p and "PYPI_PN=" in line:
-                multiline = odd_quote
+                skip_multiline_quotes = odd_quote
                 skip_empty_lines = True
             elif pypi_p and 'PYPI_NO_NORMALIZE=' in line:
-                multiline = odd_quote
+                skip_multiline_quotes = odd_quote
                 skip_empty_lines = True
-            elif pypi_p and "SRC_URI=" in line and import_pypi:
-                multiline = odd_quote
+            elif pypi_p and "SRC_URI=" in line and inherit_pypi:
+                skip_multiline_quotes = odd_quote
                 skip_empty_lines = True
-            elif pypi_p and line.startswith('S=') and import_pypi:
-                multiline = odd_quote
+            elif pypi_p and line.startswith('S=') and inherit_pypi:
+                skip_multiline_quotes = odd_quote
                 skip_empty_lines = True
             elif pypi_p and (not done["PYPI_PN"] or not done["SRC_URI"]) and "inherit" in line and "pypi" in line:
-                import_pypi = True
+                inherit_pypi = True
                 no_normalize_arg = ""
                 if not pypi_normalize:
                     no_normalize_arg = "--no-normalize "
@@ -928,20 +947,26 @@ def gen_python_ebuild(pypi_requires: str) -> tuple[str, str, set[str]]:
                 skip_empty_lines = True
             elif pypi_p and (not done["PYPI_PN"] or not done["SRC_URI"]) and "inherit" in line and "pypi" not in line:
                 # Assume that if we inherit without pypi, SRC_URI and S are manually set
-                import_pypi = False
+                inherit_pypi = False
+                if not done["PYPI_PN"]:
+                    del done["PYPI_PN"]
+                if not done["SRC_URI"]:
+                    del done["SRC_URI"]
+                if not done["BDEPEND"]:
+                    del done["BDEPEND"]
                 ebuild.write(line.rstrip() + '\n')
             elif not done["KEYWORDS"] and "KEYWORDS=" in line:
-                multiline = odd_quote
+                skip_multiline_quotes = odd_quote
                 ebuild.write('KEYWORDS="amd64 arm64"\n')
                 done["KEYWORDS"] = True
-            elif not done["PYTHON_COMPAT"] and "PYTHON_COMPAT=" in line:
+            elif python_compat_ebuild and not done["PYTHON_COMPAT"] and "PYTHON_COMPAT=" in line:
                 ebuild.write("PYTHON_COMPAT=( python3_{12,13{,t}} )\n")
                 done["PYTHON_COMPAT"] = True
             elif "REQUIRES_DIST=" in line:
-                multiline = odd_quote
+                skip_multiline_quotes = odd_quote
             elif "GENERATED_" in line:
                 if "GENERATED_DEPEND=" in line:
-                    multiline = odd_quote
+                    skip_multiline_quotes = odd_quote
                     skip_empty_lines = True
                 else:
                     cleaned_line = line
@@ -954,10 +979,6 @@ def gen_python_ebuild(pypi_requires: str) -> tuple[str, str, set[str]]:
                 pass
             else:
                 ebuild.write(line.rstrip() + '\n')
-
-        if not import_pypi:
-            done["PYPI_PN"] = True
-            done["SRC_URI"] = True
 
         for key, value in done.items():
             if not value:
@@ -986,14 +1007,15 @@ def gen_homeassistant_ebuilds() -> None:
     deptree = defaultdict[str, set[str]](set[str])
     excluded_modules = set[str]()
     for module_dep, module_names in gather_modules().items():
-        excluded = module_dep in EXCLUDED_REQUIREMENTS_ALL
+        excluded = module_dep.rpartition('==')[0] in EXCLUDED_REQUIREMENTS_ALL
         for module_name in module_names:
             if excluded:
                 excluded_modules.add(module_name)
             deptree[module_name].add(module_dep)
 
     # Excluded requirements makes the whole module unusable, lets not generate it at all.
-    deptree -= excluded_modules
+    for excluded_module in excluded_modules:
+        del deptree[excluded_module]
 
     for core_dep in core_requirements():
         deptree["homeassistant.core"].add(core_dep)
@@ -1029,6 +1051,10 @@ def gen_homeassistant_ebuilds() -> None:
 
         ebuild_dir.mkdir(parents=True, exist_ok=True)
         ebuild_path = ebuild_dir.joinpath(gentoo_module + "-" + homeassistant_version + ".ebuild")
+
+        # TODO: should be an option, as we might want to keep old ebuilds sometimes
+        for old_ebuild in ebuild_path.parent.glob('*.ebuild'):
+            old_ebuild.unlink()
 
         with ebuild_path.open("w") as ebuild:
             ebuild.write("EAPI=8\n\n")
