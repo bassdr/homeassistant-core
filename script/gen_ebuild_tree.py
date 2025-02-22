@@ -124,6 +124,7 @@ pypi_package_alias["atomicwrites"] = "atomicwrites-homeassistant"
 
 pypi_package_version_alias = dict[str, str]()
 pypi_package_version_alias["certifi"] = "3024.7.22"  # Versions are not matching and the fork is not providing many
+pypi_package_version_alias["rfc3161-client"] = "0.1.2"  # TODO: improve version chooser instead of forcing minor
 pypi_package_version_alias["bcrypt-4.2.0"] = "4.2.1"  # TODO: update crates automatically instead
 pypi_package_version_alias["uv-0.5.4"] = "0.5.6"  # TODO: update crates automatically instead
 pypi_package_version_alias["twistedchecker-0.7"] = "0.7.4"  # TODO: improve version chooser instead of forcing minor
