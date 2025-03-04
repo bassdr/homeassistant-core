@@ -121,6 +121,12 @@ pypi_package_alias["bs4"] = "beautifulsoup4"
 pypi_package_alias["lark-parser"] = "lark"
 # To avoid clashes, better use HA's fork everywhere. Versions are matching
 pypi_package_alias["atomicwrites"] = "atomicwrites-homeassistant"
+# package is named torch on pypi but pytorch in gentoo
+pypi_package_alias["pytorch"] = "torch"
+
+pypi_package_gentoo_name_alias = dict[str, str]()
+# package is named torch on pypi but pytorch in gentoo
+pypi_package_gentoo_name_alias["torch"] = "pytorch"
 
 pypi_package_version_alias = dict[str, str]()
 pypi_package_version_alias["certifi"] = "3024.7.22"  # Versions are not matching and the fork is not providing many
@@ -148,6 +154,9 @@ ebuild_category_override["speedtest-cli"] = "net-analyzer"
 ebuild_category_override["yt-dlp"] = "net-misc"
 ebuild_category_override["meson"] = "dev-build"
 ebuild_category_override["brotli"] = "app-arch"
+ebuild_category_override["cmake"] = "dev-build"
+ebuild_category_override["ninja"] = "dev-build"
+ebuild_category_override["torch"] = "sci-libs"
 
 ebuild_no_use_python = set[str]()
 ebuild_no_use_python.add("uv")
@@ -441,6 +450,9 @@ def gen_python_ebuild(pypi_requires: str) -> tuple[str, str, set[str]]:
         use = ''
 
     gentoo_package_short_name = trailing_numbers.sub(r'_\1', pypi_package)
+    if pypi_package in pypi_package_gentoo_name_alias:
+        gentoo_package_short_name = pypi_package_gentoo_name_alias[pypi_package]
+
     if pypi_package in ebuild_category_override:
         gentoo_package_name = ebuild_category_override[pypi_package] + "/" + gentoo_package_short_name
     else:
