@@ -14,6 +14,7 @@ import threading
 import traceback
 
 from homeassistant.const import __version__ as homeassistant_version
+from script.hassfest.model import Config, Integration
 from .gen_requirements_all import gather_modules, core_requirements, EXCLUDED_REQUIREMENTS_ALL
 
 overlay_dir = Path("/var/db/repos/gentoo-homeassistant")
@@ -138,8 +139,8 @@ pypi_package_version_alias["array-record-0.6.0"] = "0.5.0"  # 0.6.0 has no tag o
 pypi_package_version_alias["autogen-agentchat-0.2"] = "0.2.40"  # TODO: improve version chooser instead of forcing minor
 
 pypi_test_extras = {"test", "tests", "testing", "dev"}
-pypi_build_extras = { "build" }
-pypi_default_extras = { "default" }
+pypi_build_extras = {"build"}
+pypi_default_extras = {"default"}
 
 ebuild_category_override = dict[str, str]()
 ebuild_category_override["geopy"] = "sci-geosciences"
@@ -165,6 +166,11 @@ ebuild_extra_use_flags = dict[str, list[str]]()
 ebuild_extra_use_flags["brotli"] = ["python"]
 
 gentoo_licenses = [p.name for p in gentoo_overlay.joinpath("licenses").iterdir() if p.is_file()]
+
+extra_excluded_modules = set[str]()
+# It has a hidden dependency on bluepy AFAICS (actually even worse, seem to be depending on a fork of bluepy that has
+# not been maintained for years), I think this is a bug in HA it's not in EXCLUDED_REQUIREMENTS_ALL
+extra_excluded_modules.add("homeassistant.components.tikteck")
 
 
 def count_quotes(line: str) -> int:
@@ -424,10 +430,18 @@ class RequiresDistConditionVisitor(ast.NodeVisitor):
 
 
 def gen_python_ebuild(pypi_requires: str) -> tuple[str, str, set[str]]:
+    if pypi_requires.startswith('homeassistant.'):
+        tokenized_module = pypi_requires.split('.')
+        if len(tokenized_module) > 1 and tokenized_module[0] == "homeassistant":
+            tokenized_module[0] = "ha"
+        if len(tokenized_module) > 2 and tokenized_module[1] == "components":
+            tokenized_module[1] = "comp"
+        gentoo_module_package = "homeassistant-base/" + "-".join(tokenized_module).replace("_", "-")
+        return gentoo_module_package, f'={gentoo_module_package}-{homeassistant_version}', set[str]()
     pypi_requires_split = pypi_requires.split(';')
     pypi_requires_tokenized = tokenizer.match(pypi_requires_split[0])
-    # TODO: raise an exception here instead, and fix this. Should not happen.
     if pypi_requires_tokenized is None:
+        print(f"Could not extract information from: {pypi_requires}", file=sys.stderr)
         return "", "", set[str]()
     pypi_package = pypi_requires_tokenized.group("name").lower().replace(".", "-").replace("_", "-")
     if pypi_package in pypi_package_alias:
@@ -458,7 +472,7 @@ def gen_python_ebuild(pypi_requires: str) -> tuple[str, str, set[str]]:
     else:
         gentoo_package_name = "dev-python/" + gentoo_package_short_name
 
-    def full_gentoo_depend(version: str = "", any_version_alias:bool = False) -> str:
+    def full_gentoo_depend(version: str = "", any_version_alias: bool = False) -> str:
         version = version.strip()
 
         if version and pypi_package + '-' + version in pypi_package_version_alias:
@@ -512,7 +526,7 @@ def gen_python_ebuild(pypi_requires: str) -> tuple[str, str, set[str]]:
                 visitor.visit(pypi_condition_tree)
                 gentoo_package_depends = visitor.depends
             except SyntaxError as e:
-                print(f"AST parse error in condition {condition}: {e}")
+                print(f"AST parse error in condition {condition}: {e}", file=sys.stderr)
 
     # tuple that will be returned, contains information for the parent ebuild that depends on this ebuild.
     gentoo_package: tuple[str, str, set[str]] = (
@@ -561,9 +575,9 @@ def gen_python_ebuild(pypi_requires: str) -> tuple[str, str, set[str]]:
         pypi_package_version = output["Version"].strip()
 
     pypi_package_version = (
-        pypi_package_version_alias.get(pypi_package + '-' + pypi_package_version)
-        or pypi_package_version_alias.get(pypi_package)
-        or pypi_package_version
+            pypi_package_version_alias.get(pypi_package + '-' + pypi_package_version)
+            or pypi_package_version_alias.get(pypi_package)
+            or pypi_package_version
     )
 
     if not pypi_package_version:
@@ -773,7 +787,7 @@ def gen_python_ebuild(pypi_requires: str) -> tuple[str, str, set[str]]:
                 if not line.rstrip().endswith('='):
                     single_impl = True
                     ebuild.write("DISTUTILS_SINGLE_IMPL=1\n")
-            elif (has_requirements and not done["Requires"] or has_extras and (not done["extras"] or not done["IUSE"]))\
+            elif (has_requirements and not done["Requires"] or has_extras and (not done["extras"] or not done["IUSE"])) \
                     and "RDEPEND=" in line:
                 if has_extras and not done["extras"]:
                     ebuild.write('GENERATED_IUSE="')
@@ -932,7 +946,7 @@ def gen_python_ebuild(pypi_requires: str) -> tuple[str, str, set[str]]:
             elif pypi_p and line.startswith('S=') and inherit_pypi:
                 skip_multiline_quotes = odd_quote
                 skip_empty_lines = True
-            elif pypi_p and (not done["PYPI_PN"] or not done["SRC_URI"]) and "inherit" in line and "pypi" in line:
+            elif pypi_p and "inherit" in line and "pypi" in line and (not done["PYPI_PN"] or not done["SRC_URI"]):
                 inherit_pypi = True
                 no_normalize_arg = ""
                 if not pypi_normalize:
@@ -958,7 +972,7 @@ def gen_python_ebuild(pypi_requires: str) -> tuple[str, str, set[str]]:
                 done["SRC_URI"] = True
                 ebuild.write('\n')
                 skip_empty_lines = True
-            elif pypi_p and (not done["PYPI_PN"] or not done["SRC_URI"]) and "inherit" in line and "pypi" not in line:
+            elif pypi_p and "inherit" in line and "pypi" not in line and (not done["PYPI_PN"] or not done["SRC_URI"]):
                 # Assume that if we inherit without pypi, SRC_URI and S are manually set
                 inherit_pypi = False
                 if not done["PYPI_PN"]:
@@ -1018,17 +1032,36 @@ def gen_homeassistant_ebuilds() -> None:
         categories.write("homeassistant-base\n")
 
     deptree = defaultdict[str, set[str]](set[str])
-    excluded_modules = set[str]()
+    excluded_modules = extra_excluded_modules.copy()
     for module_dep, module_names in gather_modules().items():
         excluded = module_dep.rpartition('==')[0] in EXCLUDED_REQUIREMENTS_ALL
         for module_name in module_names:
             if excluded:
                 excluded_modules.add(module_name)
             deptree[module_name].add(module_dep)
+            # Add a dependency on ha-core for all modules to avoid partially outdated setups
+            deptree[module_name].add("homeassistant.core")
+
+    config = Config(
+        root=Path().absolute(),
+        specific_integrations=None,
+        action="validate",
+        requirements=True,
+    )
+
+    for domain, integration in Integration.load_dir(config.core_integrations_path, config).items():
+        module_name = f"homeassistant.components.{domain}"
+        if integration.disabled:
+            excluded_modules.add(module_name)
+            continue
+        deptree[module_name].add("homeassistant.core")
+        deptree[module_name].update({f"homeassistant.components.{dependency}"
+                                     for dependency in integration.dependencies})
 
     # Excluded requirements makes the whole module unusable, lets not generate it at all.
     for excluded_module in excluded_modules:
-        del deptree[excluded_module]
+        if excluded_module in deptree:
+            del deptree[excluded_module]
 
     for core_dep in core_requirements():
         deptree["homeassistant.core"].add(core_dep)
@@ -1043,7 +1076,7 @@ def gen_homeassistant_ebuilds() -> None:
             tokenized_module[0] = "ha"
         if len(tokenized_module) > 2 and tokenized_module[1] == "components":
             tokenized_module[1] = "comp"
-        gentoo_module = "-".join(tokenized_module).replace(".", "-").replace("_", "-")
+        gentoo_module = "-".join(tokenized_module).replace("_", "-")
         module_deps = []
         with ThreadPoolExecutor(max_workers=max_workers) as executor:
             futures = {executor.submit(gen_python_ebuild, dep): dep for dep in deps}
